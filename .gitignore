@@ -22,7 +22,25 @@
 
 # misc
 .DS_Store
+Thumbs.db
+Desktop.ini
 *.pem
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# editor / IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# local tooling
+.cache/
+.turbo/
+.codex/
+.claude/
 
 # debug
 npm-debug.log*
