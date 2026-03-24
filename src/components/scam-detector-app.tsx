@@ -71,33 +71,33 @@ function riskCopy(riskLevel: AnalysisResult["riskLevel"]) {
 function aiStatusCopy(result: AnalysisResult) {
   if (result.aiStatus === "usada") {
     return {
-      label: "Modo local + IA",
-      description: result.aiMessage ?? "Se sumo una segunda lectura sobre el analisis local.",
+      label: "Analisis combinado",
+      description: result.aiMessage ?? "Se sumo una lectura con IA sobre la revision base.",
       classes: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
     };
   }
 
   if (result.aiStatus === "cuota") {
     return {
-      label: "Modo local",
+      label: "Revision base",
       description:
-        result.aiMessage ?? "La segunda lectura no estuvo disponible. Se muestra el resultado local.",
+        result.aiMessage ?? "La lectura con IA no estuvo disponible. Se muestra la revision base.",
       classes: "border-amber-400/30 bg-amber-400/10 text-amber-100",
     };
   }
 
   if (result.aiStatus === "error") {
     return {
-      label: "Modo local",
+      label: "Revision base",
       description:
-        result.aiMessage ?? "La segunda lectura fallo. Se muestra el resultado local.",
+        result.aiMessage ?? "La lectura con IA fallo. Se muestra la revision base.",
       classes: "border-red-500/30 bg-red-500/10 text-red-100",
     };
   }
 
   return {
-    label: "Modo local",
-    description: result.aiMessage ?? "Este resultado se hizo solo con el analisis local.",
+    label: "Revision base",
+    description: result.aiMessage ?? "Este resultado se hizo con la primera pasada del sistema.",
     classes: "border-stone-700 bg-stone-900 text-stone-200",
   };
 }
@@ -116,18 +116,18 @@ function verdictLabel(result: NonNullable<AnalysisResult["linkAssessment"]>) {
 
 function previewStatusLabel(preview: LinkPreview) {
   if (preview.status === "fetched") {
-    return "Se pudo revisar el destino del link.";
+    return "Se pudo inspeccionar metadata segura del destino.";
   }
 
   if (preview.status === "blocked") {
-    return "La vista previa se bloqueo por seguridad.";
+    return "La inspeccion segura se bloqueo por seguridad.";
   }
 
   if (preview.status === "failed") {
-    return "No se pudo revisar el destino del link.";
+    return "No se pudo inspeccionar el destino del link.";
   }
 
-  return "No se intento abrir el destino.";
+  return "No se intento inspeccionar el destino.";
 }
 
 function breakdownLabel(key: "text" | "link" | "preview" | "final") {
@@ -224,9 +224,8 @@ export function ScamDetectorApp() {
             Pega un mensaje o un link y revisalo antes de confiar
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-7 text-stone-400 sm:text-base">
-            El analisis base funciona con reglas locales y chequeos seguros del link. Si hay una
-            segunda lectura disponible, se suma aparte. Si no, el resultado local igual queda
-            completo y explicado.
+            Primero revisa el caso con reglas propias y chequeos del link. Si la lectura con IA
+            entra, la suma arriba de esa base. Si no, igual te deja un resultado util y explicado.
           </p>
         </div>
 
@@ -379,7 +378,7 @@ export function ScamDetectorApp() {
                 </section>
 
                 <section>
-                  <h4 className="text-sm font-semibold text-stone-100">Desglose del puntaje local</h4>
+                  <h4 className="text-sm font-semibold text-stone-100">Desglose del puntaje</h4>
                   <dl className="mt-4 border-t border-stone-800 pt-4 text-sm text-stone-300">
                     {(["text", "link", "preview", "final"] as const).map((item) => (
                       <div
@@ -456,7 +455,7 @@ export function ScamDetectorApp() {
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
                       <h4 className="text-sm font-semibold text-stone-100">
-                        Lo que se pudo ver del destino
+                        Lo que se pudo inspeccionar del destino
                       </h4>
                       <p className="mt-2 text-sm text-stone-400">
                         {previewStatusLabel(result.linkPreview)}
@@ -521,7 +520,7 @@ export function ScamDetectorApp() {
 
               <section className="mt-8 border-t border-stone-800 pt-6">
                 <h4 className="text-sm font-semibold text-stone-100">
-                  Que chequeos hizo el sistema local
+                  Que reviso esta pasada
                 </h4>
                 <ul className="mt-4 space-y-3 text-sm leading-7 text-stone-300">
                   {result.localChecks.map((check) => (
@@ -557,11 +556,11 @@ export function ScamDetectorApp() {
         </section>
 
         <section className="border-t border-stone-800 pt-4">
-          <p className="text-sm font-semibold text-stone-100">Que revisa en modo local</p>
+          <p className="text-sm font-semibold text-stone-100">Que mira la revision base</p>
           <ul className="mt-4 space-y-3 text-sm leading-7 text-stone-400">
             <li>Urgencia real, premios, pedidos de claves, pagos y tono alarmista.</li>
             <li>Dominios raros, acortadores, HTTP, parametros sospechosos y links largos.</li>
-            <li>Cuando es seguro, intenta mirar el destino del link para sumar contexto.</li>
+            <li>Cuando es seguro, inspecciona redirecciones, URL final y headers sin bajar la pagina completa.</li>
             <li>Si una marca aparece en el texto o en la pagina, compara si el dominio coincide.</li>
           </ul>
         </section>
@@ -569,10 +568,10 @@ export function ScamDetectorApp() {
         <section className="border-t border-stone-800 pt-4">
           <p className="text-sm font-semibold text-stone-100">Que significa cada tramo</p>
           <ul className="mt-4 space-y-3 text-sm leading-7 text-stone-400">
-            <li>`0-24`: no aparecieron alertas claras en esta pasada local.</li>
+            <li>`0-24`: no aparecieron alertas claras en esta revision.</li>
             <li>`25-39`: hay detalles menores y conviene revisar antes de confiar.</li>
-            <li>`40-69`: ya hay suficientes señales para desconfiar y validar por otro canal.</li>
-            <li>`70-100`: el caso junta varias señales fuertes de fraude o phishing.</li>
+            <li>`40-69`: ya hay suficientes senales para desconfiar y validar por otro canal.</li>
+            <li>`70-100`: el caso junta varias senales fuertes de fraude o phishing.</li>
           </ul>
         </section>
 

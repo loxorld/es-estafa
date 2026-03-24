@@ -4,6 +4,7 @@ import {
   linkVerdictFromScore,
   type LinkAssessment,
 } from "@/lib/analysis/types";
+import { brandProfiles } from "@/lib/analysis/patterns";
 
 const directUrlPattern = /\b((?:https?:\/\/|www\.)[^\s<>"'`]+)/gi;
 const shortenerDomains = new Set([
@@ -49,12 +50,16 @@ const suspiciousKeywords = [
   "signin",
   "verify",
   "verification",
+  "verificacion",
   "update",
+  "actualizacion",
   "account",
+  "cuenta",
   "wallet",
   "bank",
   "banco",
   "secure",
+  "seguridad",
   "gift",
   "premio",
   "invoice",
@@ -64,8 +69,10 @@ const suspiciousKeywords = [
   "otp",
   "confirm",
   "recovery",
+  "recuperacion",
   "crypto",
 ];
+const dangerousNonWebSchemes = new Set(["data", "file", "javascript", "vbscript"]);
 
 function uniqueStrings(values: string[]) {
   const seen = new Set<string>();
@@ -86,21 +93,66 @@ function cleanUrlCandidate(value: string) {
   return value.trim().replace(/^[<(]+/, "").replace(/[)>.,!?;:]+$/, "");
 }
 
-function parseUrlCandidate(rawUrl: string) {
-  const cleaned = cleanUrlCandidate(rawUrl);
-  if (!cleaned) {
-    return { cleaned, parsed: null as URL | null };
+function detectExplicitScheme(value: string) {
+  const match = value.match(/^([a-z][a-z\d+\-.]*):/i);
+
+  if (!match) {
+    return null;
   }
 
-  const withProtocol =
-    /^https?:\/\//i.test(cleaned) || /^[a-z]+:\/\//i.test(cleaned)
-      ? cleaned
-      : `https://${cleaned}`;
+  const scheme = match[1].toLowerCase();
+  const remainder = value.slice(match[0].length);
+
+  if (remainder.startsWith("//")) {
+    return scheme;
+  }
+
+  if (scheme === "localhost" || scheme.includes(".")) {
+    return null;
+  }
+
+  if (/^\d+(?:[/?#]|$)/.test(remainder)) {
+    return null;
+  }
+
+  return scheme;
+}
+
+export function normalizeWebUrlCandidate(rawUrl: string) {
+  const cleaned = cleanUrlCandidate(rawUrl);
+
+  if (!cleaned) {
+    return {
+      cleaned,
+      parsed: null as URL | null,
+      unsupportedScheme: null as string | null,
+    };
+  }
+
+  const explicitScheme = detectExplicitScheme(cleaned);
+
+  if (explicitScheme && !["http", "https"].includes(explicitScheme)) {
+    return {
+      cleaned,
+      parsed: null as URL | null,
+      unsupportedScheme: explicitScheme,
+    };
+  }
+
+  const withProtocol = explicitScheme ? cleaned : `https://${cleaned}`;
 
   try {
-    return { cleaned, parsed: new URL(withProtocol) };
+    return {
+      cleaned,
+      parsed: new URL(withProtocol),
+      unsupportedScheme: null as string | null,
+    };
   } catch {
-    return { cleaned, parsed: null as URL | null };
+    return {
+      cleaned,
+      parsed: null as URL | null,
+      unsupportedScheme: null as string | null,
+    };
   }
 }
 
@@ -116,16 +168,61 @@ function isTrustedDomain(domain: string) {
   return trustedDomainHints.some((hint) => domain === hint || domain.endsWith(`.${hint}`));
 }
 
+function normalizeAsciiToken(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function getBrandLookalikeMatches(domain: string) {
+  const normalizedDomain = domain.toLowerCase();
+  const squashedDomain = normalizeAsciiToken(domain);
+
+  return uniqueStrings(
+    brandProfiles.flatMap((profile) => {
+      const matchesOfficialDomain = profile.domainHints.some(
+        (hint) => normalizedDomain === hint || normalizedDomain.endsWith(`.${hint}`),
+      );
+
+      if (matchesOfficialDomain) {
+        return [];
+      }
+
+      const candidateTokens = uniqueStrings([
+        normalizeAsciiToken(profile.name),
+        ...profile.domainHints.map((hint) => normalizeAsciiToken(hint.split(".")[0] ?? "")),
+      ]).filter((token) => token.length >= 4);
+
+      return candidateTokens.some((token) => squashedDomain.includes(token)) ? [profile.name] : [];
+    }),
+  );
+}
+
 export function extractUrls(message: string) {
   const matches = message.match(directUrlPattern) ?? [];
   return uniqueStrings(matches.map(cleanUrlCandidate)).slice(0, 6);
 }
 
 export function analyzeUrl(rawUrl: string): LinkAssessment | null {
-  const { cleaned, parsed } = parseUrlCandidate(rawUrl);
+  const { cleaned, parsed, unsupportedScheme } = normalizeWebUrlCandidate(rawUrl);
 
   if (!cleaned) {
     return null;
+  }
+
+  if (unsupportedScheme) {
+    const dangerousScheme = dangerousNonWebSchemes.has(unsupportedScheme);
+
+    return linkAssessmentSchema.parse({
+      rawUrl,
+      normalizedUrl: cleaned,
+      domain: `Esquema ${unsupportedScheme}`,
+      score: dangerousScheme ? 92 : 26,
+      verdict: dangerousScheme ? "sospechoso" : "precaucion",
+      flags: [
+        dangerousScheme
+          ? "Usa un esquema ejecutable o no web, algo impropio para un link seguro."
+          : "No es una URL web http/https, asi que no se pudo revisar como un sitio normal.",
+      ],
+    });
   }
 
   if (!parsed) {
@@ -148,6 +245,7 @@ export function analyzeUrl(rawUrl: string): LinkAssessment | null {
   const keywordMatches = suspiciousKeywords.filter((keyword) =>
     `${parsed.hostname}${parsed.pathname}${parsed.search}`.toLowerCase().includes(keyword),
   );
+  const brandLookalikes = trustedDomain ? [] : getBrandLookalikeMatches(domain);
   const topLevelDomain = domain.includes(".") ? domain.split(".").at(-1) ?? "" : "";
 
   if (!["http:", "https:"].includes(parsed.protocol)) {
@@ -218,6 +316,18 @@ export function analyzeUrl(rawUrl: string): LinkAssessment | null {
   if (/%[0-9A-F]{2}/i.test(cleaned)) {
     score += 6;
     flags.push("Contiene caracteres codificados que pueden esconder partes del destino.");
+  }
+
+  if (brandLookalikes.length > 0) {
+    score += 20;
+    flags.push(
+      `El dominio menciona ${brandLookalikes.join(", ")}, pero no coincide con un dominio oficial de esa marca.`,
+    );
+
+    if ((domain.match(/-/g) ?? []).length > 0 || keywordMatches.length > 0) {
+      score += 10;
+      flags.push("Combina una marca conocida con palabras extra, algo comun en links de suplantacion.");
+    }
   }
 
   if (keywordMatches.length > 0) {

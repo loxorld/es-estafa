@@ -2,13 +2,17 @@ import { NextResponse } from "next/server";
 
 import { analyzeSubmission } from "@/lib/analysis/scam";
 import { analyzeInputSchema } from "@/lib/analysis/types";
-import { consumeRateLimit, getClientIp } from "@/lib/rate-limit";
+import { consumeRateLimit, getClientRateLimitKey } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+
+const maxAnalyzeBodyBytes = 16_000;
 
 function buildRateLimitHeaders(result: ReturnType<typeof consumeRateLimit>) {
   return {
     "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
     "X-RateLimit-Limit": String(result.limit),
     "X-RateLimit-Remaining": String(result.remaining),
     "Retry-After": String(result.retryAfter),
@@ -16,8 +20,9 @@ function buildRateLimitHeaders(result: ReturnType<typeof consumeRateLimit>) {
 }
 
 export async function POST(request: Request) {
-  const rateLimit = consumeRateLimit(getClientIp(request));
+  const rateLimit = consumeRateLimit(getClientRateLimitKey(request));
   const headers = buildRateLimitHeaders(rateLimit);
+  const declaredBodyLength = Number(request.headers.get("content-length") ?? "0");
 
   if (!rateLimit.ok) {
     return NextResponse.json(
@@ -26,6 +31,18 @@ export async function POST(request: Request) {
       },
       {
         status: 429,
+        headers,
+      },
+    );
+  }
+
+  if (Number.isFinite(declaredBodyLength) && declaredBodyLength > maxAnalyzeBodyBytes) {
+    return NextResponse.json(
+      {
+        error: "La solicitud es demasiado grande para este analisis.",
+      },
+      {
+        status: 413,
         headers,
       },
     );

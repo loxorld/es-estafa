@@ -1,15 +1,64 @@
 import "server-only";
 
 import dns from "node:dns/promises";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 
 import { linkPreviewSchema, type LinkPreview } from "@/lib/analysis/types";
+import { normalizeWebUrlCandidate } from "@/lib/analysis/url";
 
 const requestHeaders = {
   "user-agent": "es-estafa-bot/1.0 (+link-preview)",
   accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
 };
-const maxPreviewBodyBytes = 1_500_000;
+const maxPreviewContentLengthBytes = 1_500_000;
+const dangerousNonWebSchemes = new Set(["data", "file", "javascript", "vbscript"]);
+const loginKeywords = ["login", "signin", "sign-in", "acceso", "ingresa", "cuenta", "account"];
+const verificationKeywords = [
+  "verify",
+  "verification",
+  "security",
+  "secure",
+  "update",
+  "password",
+  "token",
+  "otp",
+  "pin",
+];
+const paymentKeywords = ["invoice", "factura", "payment", "pago", "wallet", "crypto", "transfer"];
+const rewardKeywords = ["gift", "premio", "sorteo", "winner", "claim"];
+
+function createBlockedIpLists() {
+  const blockedIpv4 = new BlockList();
+  blockedIpv4.addSubnet("0.0.0.0", 8, "ipv4");
+  blockedIpv4.addSubnet("10.0.0.0", 8, "ipv4");
+  blockedIpv4.addSubnet("100.64.0.0", 10, "ipv4");
+  blockedIpv4.addSubnet("127.0.0.0", 8, "ipv4");
+  blockedIpv4.addSubnet("169.254.0.0", 16, "ipv4");
+  blockedIpv4.addSubnet("172.16.0.0", 12, "ipv4");
+  blockedIpv4.addSubnet("192.0.2.0", 24, "ipv4");
+  blockedIpv4.addSubnet("192.168.0.0", 16, "ipv4");
+  blockedIpv4.addSubnet("198.18.0.0", 15, "ipv4");
+  blockedIpv4.addSubnet("198.51.100.0", 24, "ipv4");
+  blockedIpv4.addSubnet("203.0.113.0", 24, "ipv4");
+  blockedIpv4.addSubnet("224.0.0.0", 4, "ipv4");
+  blockedIpv4.addSubnet("240.0.0.0", 4, "ipv4");
+
+  const blockedIpv6 = new BlockList();
+  blockedIpv6.addSubnet("::", 128, "ipv6");
+  blockedIpv6.addSubnet("::1", 128, "ipv6");
+  blockedIpv6.addSubnet("fc00::", 7, "ipv6");
+  blockedIpv6.addSubnet("fe80::", 10, "ipv6");
+  blockedIpv6.addSubnet("fec0::", 10, "ipv6");
+  blockedIpv6.addSubnet("ff00::", 8, "ipv6");
+  blockedIpv6.addSubnet("2001:db8::", 32, "ipv6");
+
+  return {
+    blockedIpv4,
+    blockedIpv6,
+  };
+}
+
+const { blockedIpv4, blockedIpv6 } = createBlockedIpLists();
 
 function limitText(value: string | null | undefined, maxLength: number) {
   if (!value) {
@@ -19,66 +68,53 @@ function limitText(value: string | null | undefined, maxLength: number) {
   return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
-function normalizeCandidate(rawUrl: string) {
-  const cleaned = rawUrl.trim();
-  if (!cleaned) {
+function normalizeIpLiteral(value: string) {
+  return value.replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
+}
+
+function decodeIpv4MappedIpv6(ip: string) {
+  const normalized = normalizeIpLiteral(ip);
+  const dottedMatch = normalized.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+
+  if (dottedMatch) {
+    return dottedMatch[1];
+  }
+
+  const hexMatch = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+
+  if (!hexMatch) {
     return null;
   }
 
-  const withProtocol =
-    /^https?:\/\//i.test(cleaned) || /^[a-z]+:\/\//i.test(cleaned)
-      ? cleaned
-      : `https://${cleaned}`;
+  const left = Number.parseInt(hexMatch[1], 16);
+  const right = Number.parseInt(hexMatch[2], 16);
 
-  try {
-    return new URL(withProtocol);
-  } catch {
-    return null;
-  }
-}
-
-function isPrivateIpv4(ip: string) {
-  const parts = ip.split(".").map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part))) {
-    return false;
-  }
-
-  const [a, b] = parts;
-  return (
-    a === 10 ||
-    a === 127 ||
-    a === 0 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168)
-  );
-}
-
-function isPrivateIpv6(ip: string) {
-  const normalized = ip.toLowerCase();
-  return (
-    normalized === "::1" ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    normalized.startsWith("fe80:")
-  );
+  return `${left >> 8}.${left & 255}.${right >> 8}.${right & 255}`;
 }
 
 function isPrivateOrReservedIp(ip: string) {
-  const family = isIP(ip);
+  const normalized = normalizeIpLiteral(ip);
+  const mappedIpv4 = decodeIpv4MappedIpv6(normalized);
+
+  if (mappedIpv4) {
+    return blockedIpv4.check(mappedIpv4, "ipv4");
+  }
+
+  const family = isIP(normalized);
+
   if (family === 4) {
-    return isPrivateIpv4(ip);
+    return blockedIpv4.check(normalized, "ipv4");
   }
 
   if (family === 6) {
-    return isPrivateIpv6(ip);
+    return blockedIpv6.check(normalized, "ipv6");
   }
 
   return false;
 }
 
 async function assertSafeHost(url: URL) {
-  const hostname = url.hostname.toLowerCase();
+  const hostname = normalizeIpLiteral(url.hostname);
 
   if (
     hostname === "localhost" ||
@@ -127,80 +163,135 @@ async function assertSafeHost(url: URL) {
   }
 }
 
-function stripHtml(html: string) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function extractTagContent(html: string, tagName: string) {
-  const match = html.match(new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "i"));
-  return match?.[1]?.replace(/\s+/g, " ").trim() || null;
-}
-
-function extractMetaDescription(html: string) {
-  const match = html.match(
-    /<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-  );
-  return match?.[1]?.replace(/\s+/g, " ").trim() || null;
+function buildPreviewResult({
+  status,
+  requestedUrl,
+  finalUrl,
+  httpStatus,
+  contentType,
+  title,
+  description,
+  pageSignals,
+  notes,
+}: {
+  status: LinkPreview["status"];
+  requestedUrl: string;
+  finalUrl: string | null;
+  httpStatus: number | null;
+  contentType: string | null;
+  title: string | null;
+  description: string | null;
+  pageSignals: string[];
+  notes: string[];
+}) {
+  return linkPreviewSchema.parse({
+    status,
+    requestedUrl,
+    finalUrl,
+    httpStatus,
+    contentType,
+    title,
+    description,
+    pageSignals,
+    notes: notes.map((note) => note.slice(0, 180)).slice(0, 6),
+  });
 }
 
 function isTextLikeContentType(contentType: string | null) {
   return Boolean(contentType && /(text\/html|application\/xhtml\+xml|text\/plain)/i.test(contentType));
 }
 
-function buildPageSignals(html: string, text: string) {
-  const source = `${html} ${text}`.toLowerCase();
+async function requestHeadWithRedirects(startUrl: URL) {
+  let currentUrl = startUrl;
+  const redirectNotes: string[] = [];
+
+  for (let redirectCount = 0; redirectCount < 4; redirectCount += 1) {
+    const response = await fetch(currentUrl, {
+      method: "HEAD",
+      headers: requestHeaders,
+      redirect: "manual",
+      signal: AbortSignal.timeout(5000),
+    });
+
+    const isRedirect = response.status >= 300 && response.status < 400;
+    const location = response.headers.get("location");
+
+    if (isRedirect && location) {
+      const nextUrl = new URL(location, currentUrl);
+      await assertSafeHost(nextUrl);
+      redirectNotes.push(`Redireccion ${redirectCount + 1}: ${currentUrl.toString()} -> ${nextUrl.toString()}`);
+      currentUrl = nextUrl;
+      continue;
+    }
+
+    return {
+      response,
+      finalUrl: currentUrl,
+      notes: redirectNotes,
+    };
+  }
+
+  throw new Error("El link tuvo demasiadas redirecciones y se corto la vista previa.");
+}
+
+function hasKeyword(source: string, keywords: readonly string[]) {
+  return keywords.some((keyword) => source.includes(keyword));
+}
+
+function buildPageSignals(finalUrl: URL, contentType: string | null) {
+  const source = `${finalUrl.hostname}${finalUrl.pathname}${finalUrl.search}`.toLowerCase();
   const signals: string[] = [];
 
-  if (/<form[\s\S]*?<input[\s\S]*?type=["']password["']/i.test(html)) {
-    signals.push("La pagina parece tener un formulario de login con campo de password.");
+  if (hasKeyword(source, loginKeywords)) {
+    signals.push("La URL final menciona login, acceso o cuenta.");
   }
 
-  if (
-    /(iniciar sesi[oó]n|sign in|login|accede con tu cuenta|ingresa con tu cuenta)/i.test(source)
-  ) {
-    signals.push("El contenido empuja a iniciar sesion o validar una cuenta.");
+  if (hasKeyword(source, verificationKeywords)) {
+    signals.push("La URL final menciona verificacion, seguridad o actualizacion de credenciales.");
   }
 
-  if (/(verify|verification|security check|update password|account locked)/i.test(source)) {
-    signals.push("El contenido habla de verificar cuenta, seguridad o bloqueo.");
+  if (hasKeyword(source, paymentKeywords)) {
+    signals.push("La URL final menciona pagos, facturas o dinero.");
   }
 
-  if (/(invoice|factura|payment|pago pendiente|wallet|crypto)/i.test(source)) {
-    signals.push("La pagina empuja pagos, facturas o movimientos de dinero.");
+  if (hasKeyword(source, rewardKeywords)) {
+    signals.push("La URL final menciona premios, sorteos o beneficios.");
   }
 
-  if (/(gift|premio|sorteo|claim now|winner)/i.test(source)) {
-    signals.push("El contenido promete premios o beneficios para apurarte.");
-  }
-
-  if (/(otp|token|pin|codigo de seguridad|one time password)/i.test(source)) {
-    signals.push("El contenido menciona codigos de seguridad o autenticacion.");
-  }
-
-  if (/(soporte oficial|official support|chat support|centro de seguridad)/i.test(source)) {
-    signals.push("La pagina intenta presentarse como soporte, seguridad o centro oficial.");
+  if (contentType && /application\/pdf|application\/zip|application\/octet-stream/i.test(contentType)) {
+    signals.push("El destino entrega un archivo en vez de una pagina HTML comun.");
   }
 
   return signals.map((signal) => signal.slice(0, 160)).slice(0, 8);
 }
 
 export async function previewLink(rawUrl: string): Promise<LinkPreview> {
-  const url = normalizeCandidate(rawUrl);
+  const { cleaned, parsed, unsupportedScheme } = normalizeWebUrlCandidate(rawUrl);
+
+  if (unsupportedScheme) {
+    return buildPreviewResult({
+      status: "blocked",
+      requestedUrl: cleaned,
+      finalUrl: null,
+      httpStatus: null,
+      contentType: null,
+      title: null,
+      description: null,
+      pageSignals: [],
+      notes: [
+        dangerousNonWebSchemes.has(unsupportedScheme)
+          ? "La vista previa se bloqueo porque el link usa un esquema ejecutable o no web."
+          : "Solo se admite vista previa para URLs web http o https.",
+      ],
+    });
+  }
+
+  const url = parsed;
 
   if (!url) {
-    return linkPreviewSchema.parse({
+    return buildPreviewResult({
       status: "failed",
-      requestedUrl: rawUrl,
+      requestedUrl: cleaned || rawUrl,
       finalUrl: null,
       httpStatus: null,
       contentType: null,
@@ -214,7 +305,7 @@ export async function previewLink(rawUrl: string): Promise<LinkPreview> {
   try {
     await assertSafeHost(url);
   } catch (error) {
-    return linkPreviewSchema.parse({
+    return buildPreviewResult({
       status: "blocked",
       requestedUrl: url.toString(),
       finalUrl: null,
@@ -231,106 +322,51 @@ export async function previewLink(rawUrl: string): Promise<LinkPreview> {
     });
   }
 
-  let currentUrl = url;
-  const redirectNotes: string[] = [];
-
   try {
-    for (let redirectCount = 0; redirectCount < 4; redirectCount += 1) {
-      const response = await fetch(currentUrl, {
-        headers: requestHeaders,
-        redirect: "manual",
-        signal: AbortSignal.timeout(5000),
-      });
+    const metadataResult = await requestHeadWithRedirects(url);
+    const contentType = metadataResult.response.headers.get("content-type");
+    const contentLength = Number(metadataResult.response.headers.get("content-length") ?? "0");
+    const notes = [...metadataResult.notes];
+    const pageSignals = buildPageSignals(metadataResult.finalUrl, contentType);
 
-      const isRedirect = response.status >= 300 && response.status < 400;
-      const location = response.headers.get("location");
+    notes.push("Por seguridad, solo se inspeccionaron redirecciones, URL final y headers del destino.");
 
-      if (isRedirect && location) {
-        const nextUrl = new URL(location, currentUrl);
-        await assertSafeHost(nextUrl);
-        redirectNotes.push(`Redireccion ${redirectCount + 1}: ${currentUrl.toString()} -> ${nextUrl.toString()}`);
-        currentUrl = nextUrl;
-        continue;
-      }
-
-      const contentType = response.headers.get("content-type");
-      const notes = [...redirectNotes];
-
-      if (!response.ok) {
-        notes.push(`La pagina respondio con estado HTTP ${response.status}.`);
-      }
-
-      if (contentType && !isTextLikeContentType(contentType)) {
-        notes.push(`El contenido parece ser ${contentType} y no una pagina HTML comun.`);
-
-        return linkPreviewSchema.parse({
-          status: "fetched",
-          requestedUrl: limitText(url.toString(), 2048) || url.toString().slice(0, 2048),
-          finalUrl: limitText(currentUrl.toString(), 2048),
-          httpStatus: response.status,
-          contentType: limitText(contentType, 120),
-          title: null,
-          description: null,
-          pageSignals: [],
-          notes: notes.map((note) => note.slice(0, 180)).slice(0, 6),
-        });
-      }
-
-      const contentLength = Number(response.headers.get("content-length") ?? "0");
-
-      if (Number.isFinite(contentLength) && contentLength > maxPreviewBodyBytes) {
-        notes.push("La pagina es demasiado grande para una vista previa segura y acotada.");
-
-        return linkPreviewSchema.parse({
-          status: "fetched",
-          requestedUrl: limitText(url.toString(), 2048) || url.toString().slice(0, 2048),
-          finalUrl: limitText(currentUrl.toString(), 2048),
-          httpStatus: response.status,
-          contentType: limitText(contentType, 120),
-          title: null,
-          description: null,
-          pageSignals: [],
-          notes: notes.map((note) => note.slice(0, 180)).slice(0, 6),
-        });
-      }
-
-      const rawBody = (await response.text()).slice(0, 150000);
-      const title = extractTagContent(rawBody, "title");
-      const description = extractMetaDescription(rawBody);
-      const visibleText = stripHtml(rawBody).slice(0, 1200);
-      const pageSignals = buildPageSignals(rawBody, visibleText);
-
-      if (!title && !description && visibleText.length < 40) {
-        notes.push("La pagina devolvio poco contenido legible para inspeccionar.");
-      }
-
-      if (currentUrl.toString() !== url.toString()) {
-        notes.push("El destino final no coincide con el link original compartido.");
-      }
-
-      return linkPreviewSchema.parse({
-        status: "fetched",
-        requestedUrl: limitText(url.toString(), 2048) || url.toString().slice(0, 2048),
-        finalUrl: limitText(currentUrl.toString(), 2048),
-        httpStatus: response.status,
-        contentType: limitText(contentType, 120),
-        title: limitText(title, 180),
-        description: limitText(description, 260),
-        pageSignals,
-        notes: notes.map((note) => note.slice(0, 180)).slice(0, 6),
-      });
+    if (!metadataResult.response.ok) {
+      notes.push(`La pagina respondio con estado HTTP ${metadataResult.response.status}.`);
     }
 
-    return linkPreviewSchema.parse({
-      status: "failed",
+    if (!contentType) {
+      notes.push("El servidor no expuso un content-type claro para identificar el destino.");
+    } else if (!isTextLikeContentType(contentType)) {
+      notes.push(`El contenido parece ser ${contentType} y no una pagina HTML comun.`);
+    }
+
+    if (Number.isFinite(contentLength) && contentLength > maxPreviewContentLengthBytes) {
+      notes.push("El recurso declarado es grande, asi que no se intento descargar contenido.");
+    }
+
+    if (metadataResult.finalUrl.toString() !== url.toString()) {
+      notes.push("El destino final no coincide con el link original compartido.");
+    }
+
+    if (metadataResult.response.status === 405 || metadataResult.response.status === 501) {
+      notes.push("El servidor no permite inspeccion segura por HEAD sin descargar la pagina completa.");
+    }
+
+    if (metadataResult.response.status === 403) {
+      notes.push("El servidor bloqueo la inspeccion segura del destino antes de exponer metadata util.");
+    }
+
+    return buildPreviewResult({
+      status: "fetched",
       requestedUrl: limitText(url.toString(), 2048) || url.toString().slice(0, 2048),
-      finalUrl: limitText(currentUrl.toString(), 2048),
-      httpStatus: null,
-      contentType: null,
+      finalUrl: limitText(metadataResult.finalUrl.toString(), 2048),
+      httpStatus: metadataResult.response.status,
+      contentType: limitText(contentType, 120),
       title: null,
       description: null,
-      pageSignals: [],
-      notes: ["El link tuvo demasiadas redirecciones y se corto la vista previa."],
+      pageSignals,
+      notes,
     });
   } catch (error) {
     const note =
@@ -340,10 +376,10 @@ export async function previewLink(rawUrl: string): Promise<LinkPreview> {
           ? `No se pudo inspeccionar el link: ${error.message}`.slice(0, 180)
           : "No se pudo inspeccionar el link.";
 
-    return linkPreviewSchema.parse({
+    return buildPreviewResult({
       status: "failed",
       requestedUrl: limitText(url.toString(), 2048) || url.toString().slice(0, 2048),
-      finalUrl: limitText(currentUrl.toString(), 2048),
+      finalUrl: limitText(url.toString(), 2048),
       httpStatus: null,
       contentType: null,
       title: null,

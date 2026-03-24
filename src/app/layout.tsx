@@ -17,7 +17,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "Es Estafa?",
   description:
-    "Revisa mensajes y links sospechosos con analisis local, chequeos del dominio y vista previa segura del destino.",
+    "Revisa mensajes y links sospechosos con OpenAI, chequeos del dominio e inspeccion segura del destino.",
 };
 
 export default function RootLayout({

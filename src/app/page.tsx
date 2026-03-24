@@ -3,15 +3,15 @@ import { ScamDetectorApp } from "@/components/scam-detector-app";
 const notes = [
   {
     title: "Texto o link",
-    description: "Puedes analizar un mensaje, un link o las dos cosas juntas, y ver por separado que aporto cada parte.",
+    description: "Puedes pegar un mensaje, un link o las dos cosas, y ver que peso tuvo cada parte.",
   },
   {
-    title: "Base local",
-    description: "La app ya funciona con reglas propias aunque no haya API key, con foco en que el analisis local sea util de verdad.",
+    title: "Doble lectura",
+    description: "Hace una primera pasada propia y, si OpenAI responde, suma una lectura extra sobre el mismo caso.",
   },
   {
-    title: "Modo visible",
-    description: "El resultado indica si fue solo local o si se sumo una segunda lectura.",
+    title: "Rastro claro",
+    description: "El resultado muestra de donde sale la alerta: texto, dominio, destino y evidencia concreta.",
   },
 ];
 
@@ -27,10 +27,9 @@ export default function Home() {
             Revisa mensajes y links sospechosos antes de responder, pagar o hacer clic.
           </h1>
           <p className="mt-4 max-w-3xl text-base leading-8 text-stone-400 sm:text-lg">
-            La pagina prioriza una lectura clara desde el analisis local. Revisa el texto, la
-            estructura del dominio, la vista previa segura del destino y la coherencia entre la
-            marca mencionada y el dominio real. Si despues se suma una segunda lectura, queda
-            indicada aparte en el resultado.
+            La app cruza lo que dice el mensaje, como esta armado el link y que devuelve el
+            destino sin descargar la pagina completa. La idea es ayudarte a frenar a tiempo con un
+            resultado entendible, no con humo.
           </p>
         </header>
 
